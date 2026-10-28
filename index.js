@@ -4,9 +4,15 @@ const express = require('express');
 // Configure these as environment variables on Render
 const HOST = process.env.MC_HOST;                        // e.g. yourserver.aternos.me
 const PORT = parseInt(process.env.MC_PORT || '25565', 10);
-const USERNAME = process.env.MC_USERNAME || 'AFK_Bot';
+const USERNAME = process.env.MC_USERNAME || 'CreeperFarm';
 const VERSION = process.env.MC_VERSION || false;         // e.g. "1.20.4"; false = auto-detect
 const RETRY_MS = parseInt(process.env.RETRY_MS || '60000', 10);
+
+// Optional: AFK pool coordinates. Needs the bot to be opped on the server.
+// Set AFK_X, AFK_Y, AFK_Z on Render (e.g. 120 64 -340). Leave unset to skip teleporting.
+const AFK_POS = ['AFK_X', 'AFK_Y', 'AFK_Z'].every((k) => process.env[k] !== undefined)
+  ? [process.env.AFK_X, process.env.AFK_Y, process.env.AFK_Z]
+  : null;
 
 if (!HOST) {
   console.error('MC_HOST is required');
@@ -37,16 +43,26 @@ function connect() {
     auth: 'offline', // requires "Cracked" enabled on the Aternos server
   });
 
-  bot.once('spawn', () => {
+  // Fires on first join and again after every death/respawn
+  bot.on('spawn', () => {
     status = 'online';
     console.log('Bot spawned');
-    // Small random movement so the bot isn't kicked as idle
-    moveTimer = setInterval(() => {
-      if (!bot || !bot.entity) return;
-      bot.setControlState('jump', true);
-      setTimeout(() => bot && bot.setControlState('jump', false), 300);
-      bot.look(Math.random() * Math.PI * 2, 0, true);
-    }, 20000);
+
+    // Go to the AFK pool (requires op). Delay so the server finishes the login.
+    if (AFK_POS) {
+      setTimeout(() => {
+        if (bot) bot.chat(`/tp ${USERNAME} ${AFK_POS.join(' ')}`);
+      }, 3000);
+    }
+
+    // Anti-idle without moving: turn the head and swing the arm
+    if (!moveTimer) {
+      moveTimer = setInterval(() => {
+        if (!bot || !bot.entity) return;
+        bot.look(Math.random() * Math.PI * 2, 0, true);
+        bot.swingArm('right');
+      }, 20000);
+    }
   });
 
   const cleanup = (reason) => {
