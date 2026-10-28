@@ -43,8 +43,24 @@ function connect() {
     auth: 'offline', // requires "Cracked" enabled on the Aternos server
   });
 
+  console.log(`Connecting to ${HOST}:${PORT} as ${USERNAME} (version: ${VERSION || 'auto'})`);
+
+  // If nothing happens within 30s, give up and retry instead of hanging forever
+  const watchdog = setTimeout(() => {
+    if (status === 'connecting') {
+      console.log('No response after 30s. Is the server Online? Check MC_PORT and MC_VERSION.');
+      try { bot && bot.end(); } catch (_) {}
+      cleanup('connect timeout');
+    }
+  }, 30000);
+
+  bot._client.on('connect', () => console.log('TCP connection opened'));
+  bot.on('login', () => console.log('Logged in, waiting for spawn'));
+  bot.on('messagestr', (m) => console.log('Chat:', m));
+
   // Fires on first join and again after every death/respawn
   bot.on('spawn', () => {
+    clearTimeout(watchdog);
     status = 'online';
     console.log('Bot spawned');
 
@@ -66,6 +82,7 @@ function connect() {
   });
 
   const cleanup = (reason) => {
+    clearTimeout(watchdog);
     console.log('Disconnected:', reason);
     if (moveTimer) clearInterval(moveTimer);
     moveTimer = null;
