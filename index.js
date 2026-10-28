@@ -19,6 +19,8 @@ if (!HOST) {
   process.exit(1);
 }
 
+console.log('Mineflayer version:', require('mineflayer/package.json').version);
+
 let status = 'starting';
 let bot = null;
 let moveTimer = null;
@@ -91,7 +93,8 @@ function connect() {
   };
 
   bot.on('end', cleanup);
-  bot.on('kicked', (r) => console.log('Kicked:', r));
+  bot.on('kicked', (r) =>
+    console.log('Kicked:', require('util').inspect(r, { depth: null })));
   bot.on('error', (e) => console.log('Error:', e.message));
 }
 
