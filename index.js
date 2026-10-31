@@ -1,18 +1,17 @@
 const mineflayer = require('mineflayer');
 const express = require('express');
+const util = require('util');
 
-// Configure these as environment variables on Render
-const HOST = process.env.MC_HOST;                        // e.g. yourserver.aternos.me
+// ---- Config (set as environment variables on Render) ----
+const HOST = process.env.MC_HOST;                         // e.g. yourserver.aternos.me
 const PORT = parseInt(process.env.MC_PORT || '25565', 10);
-const USERNAME = process.env.MC_USERNAME || 'CreeperFarm';
-const VERSION = process.env.MC_VERSION || false;         // e.g. "1.20.4"; false = auto-detect
+const VERSION = process.env.MC_VERSION || false;          // e.g. "26.1.2"; false = auto-detect
 const RETRY_MS = parseInt(process.env.RETRY_MS || '60000', 10);
+const STAGGER_MS = parseInt(process.env.STAGGER_MS || '5000', 10); // delay between bot logins
 
-// Optional: AFK pool coordinates. Needs the bot to be opped on the server.
-// Set AFK_X, AFK_Y, AFK_Z on Render (e.g. 120 64 -340). Leave unset to skip teleporting.
-const AFK_POS = ['AFK_X', 'AFK_Y', 'AFK_Z'].every((k) => process.env[k] !== undefined)
-  ? [process.env.AFK_X, process.env.AFK_Y, process.env.AFK_Z]
-  : null;
+// One or more bot names, comma-separated: MC_USERNAMES=CreeperFarm,CreeperFarm2
+const USERNAMES = (process.env.MC_USERNAMES || process.env.MC_USERNAME || 'CreeperFarm')
+  .split(',').map((s) => s.trim()).filter(Boolean);
 
 if (!HOST) {
   console.error('MC_HOST is required');
@@ -20,87 +19,92 @@ if (!HOST) {
 }
 
 console.log('Mineflayer version:', require('mineflayer/package.json').version);
+console.log('Bots:', USERNAMES.join(', '));
 
-let status = 'starting';
-let bot = null;
-let moveTimer = null;
-let retryTimer = null;
+const statuses = {};
 
-function scheduleReconnect() {
-  if (retryTimer) return;
-  status = `offline, retrying in ${RETRY_MS / 1000}s`;
-  retryTimer = setTimeout(() => {
-    retryTimer = null;
-    connect();
-  }, RETRY_MS);
+function startBot(username) {
+  let bot = null;
+  let moveTimer = null;
+  let retryTimer = null;
+  const log = (...a) => console.log(`[${username}]`, ...a);
+  statuses[username] = 'starting';
+
+  function scheduleReconnect() {
+    if (retryTimer) return;
+    statuses[username] = `offline, retrying in ${RETRY_MS / 1000}s`;
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      connect();
+    }, RETRY_MS);
+  }
+
+  function connect() {
+    statuses[username] = 'connecting';
+    log(`Connecting to ${HOST}:${PORT} (version: ${VERSION || 'auto'})`);
+
+    let ended = false;
+    const b = mineflayer.createBot({
+      host: HOST,
+      port: PORT,
+      username,
+      version: VERSION,
+      auth: 'offline', // requires "Cracked" enabled on the Aternos server
+    });
+    bot = b;
+
+    const cleanup = (reason) => {
+      if (ended) return;
+      ended = true;
+      clearTimeout(watchdog);
+      log('Disconnected:', reason);
+      if (moveTimer) clearInterval(moveTimer);
+      moveTimer = null;
+      bot = null;
+      scheduleReconnect();
+    };
+
+    // Give up and retry if nothing happens within 30s
+    const watchdog = setTimeout(() => {
+      if (statuses[username] === 'connecting') {
+        log('No response after 30s. Is the server Online? Check MC_PORT and MC_VERSION.');
+        try { b.end(); } catch (_) {}
+        cleanup('connect timeout');
+      }
+    }, 30000);
+
+    b._client.on('connect', () => log('TCP connection opened'));
+    b.on('login', () => log('Logged in, waiting for spawn'));
+    b.on('messagestr', (m) => log('Chat:', m));
+
+    // Fires on first join and again after every death/respawn
+    b.on('spawn', () => {
+      clearTimeout(watchdog);
+      statuses[username] = 'online';
+      log('Spawned');
+
+      // Anti-idle without moving: just turn the head every so often
+      if (!moveTimer) {
+        moveTimer = setInterval(() => {
+          if (!bot || !bot.entity) return;
+          bot.look(Math.random() * Math.PI * 2, 0, true);
+        }, 5000);
+      }
+    });
+
+    b.on('end', cleanup);
+    b.on('kicked', (r) => log('Kicked:', util.inspect(r, { depth: null })));
+    b.on('error', (e) => log('Error:', e.message));
+  }
+
+  connect();
 }
 
-function connect() {
-  status = 'connecting';
-  bot = mineflayer.createBot({
-    host: HOST,
-    port: PORT,
-    username: USERNAME,
-    version: VERSION,
-    auth: 'offline', // requires "Cracked" enabled on the Aternos server
-  });
-
-  console.log(`Connecting to ${HOST}:${PORT} as ${USERNAME} (version: ${VERSION || 'auto'})`);
-
-  // If nothing happens within 30s, give up and retry instead of hanging forever
-  const watchdog = setTimeout(() => {
-    if (status === 'connecting') {
-      console.log('No response after 30s. Is the server Online? Check MC_PORT and MC_VERSION.');
-      try { bot && bot.end(); } catch (_) {}
-      cleanup('connect timeout');
-    }
-  }, 30000);
-
-  bot._client.on('connect', () => console.log('TCP connection opened'));
-  bot.on('login', () => console.log('Logged in, waiting for spawn'));
-  bot.on('messagestr', (m) => console.log('Chat:', m));
-
-  // Fires on first join and again after every death/respawn
-  bot.on('spawn', () => {
-    clearTimeout(watchdog);
-    status = 'online';
-    console.log('Bot spawned');
-
-    // Go to the AFK pool (requires op). Delay so the server finishes the login.
-    if (AFK_POS) {
-      setTimeout(() => {
-        if (bot) bot.chat(`/tp ${USERNAME} ${AFK_POS.join(' ')}`);
-      }, 3000);
-    }
-
-    // Anti-idle without moving: turn the head and swing the arm
-    if (!moveTimer) {
-      moveTimer = setInterval(() => {
-        if (!bot || !bot.entity) return;
-        bot.look(Math.random() * Math.PI * 2, 0, true);
-        bot.swingArm('right');
-      }, 20000);
-    }
-  });
-
-  const cleanup = (reason) => {
-    clearTimeout(watchdog);
-    console.log('Disconnected:', reason);
-    if (moveTimer) clearInterval(moveTimer);
-    moveTimer = null;
-    bot = null;
-    scheduleReconnect();
-  };
-
-  bot.on('end', cleanup);
-  bot.on('kicked', (r) =>
-    console.log('Kicked:', require('util').inspect(r, { depth: null })));
-  bot.on('error', (e) => console.log('Error:', e.message));
-}
+// Start bots one after another so the server doesn't throttle the logins
+USERNAMES.forEach((name, i) => setTimeout(() => startBot(name), i * STAGGER_MS));
 
 // Health endpoint for UptimeRobot (keeps the Render free service awake)
 const app = express();
-app.get('/', (_req, res) => res.send(`AFK bot status: ${status}`));
+app.get('/', (_req, res) =>
+  res.send(Object.entries(statuses).map(([n, s]) => `${n}: ${s}`).join('\n') || 'starting'));
 app.listen(process.env.PORT || 3000, () => console.log('Web server up'));
-
-connect();
