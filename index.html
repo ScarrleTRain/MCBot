@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Creeper Farm Bots</title>
+<style>
+  :root {
+    --bg: #14171c; --card: #1d222a; --line: #2b323d; --text: #e8ecf1; --muted: #8b95a5;
+    --green: #4ade80; --yellow: #facc15; --red: #f87171; --blue: #60a5fa;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 16px 48px; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; }
+  header { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+  h1 { margin: 0; font-size: 22px; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  .name { font-weight: 600; font-size: 17px; }
+  .pill { font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid; }
+  .pill.online { color: var(--green); border-color: var(--green); }
+  .pill.connecting, .pill.starting { color: var(--yellow); border-color: var(--yellow); }
+  .pill.offline { color: var(--red); border-color: var(--red); }
+  .bar-row { margin: 8px 0; }
+  .bar-label { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+  .bar { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+  .bar > div { height: 100%; transition: width .4s; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; margin-top: 14px; }
+  .stat { font-size: 13px; }
+  .stat span { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  .players { margin-top: 12px; font-size: 13px; color: var(--muted); }
+  .players b { color: var(--text); font-weight: 500; }
+  h2 { font-size: 15px; margin: 26px 0 10px; }
+  .feed { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 4px 16px; }
+  .ev { display: flex; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .ev:last-child { border-bottom: 0; }
+  .ev time { color: var(--muted); flex: none; font-variant-numeric: tabular-nums; }
+  .empty { color: var(--muted); padding: 12px 0; font-size: 13px; }
+  .err { color: var(--red); font-size: 13px; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Creeper Farm Bots</h1>
+    <div class="sub" id="updated">Loading&hellip;</div>
+  </header>
+  <div id="error" class="err" hidden></div>
+  <div class="grid" id="bots"></div>
+  <h2>Recent activity</h2>
+  <div class="feed" id="events"></div>
+</div>
+
+<script>
+  // Build all DOM with textContent so chat text from players can never inject HTML
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  function statusClass(s) {
+    if (s === 'online') return 'online';
+    if (s === 'connecting' || s === 'starting') return 'connecting';
+    return 'offline';
+  }
+
+  function fmtUptime(since, now) {
+    if (!since) return '\u2013';
+    const m = Math.floor((now - since) / 60000);
+    const h = Math.floor(m / 60);
+    return h > 0 ? h + 'h ' + (m % 60) + 'm' : m + 'm';
+  }
+
+  function fmtGameClock(t) {
+    // 0 ticks = 6:00 in game
+    const hours = ((t / 1000) + 6) % 24;
+    const hh = Math.floor(hours);
+    const mm = Math.floor((hours - hh) * 60);
+    return String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
+  }
+
+  function bar(label, value, max, color) {
+    const row = el('div', 'bar-row');
+    const lab = el('div', 'bar-label');
+    lab.append(el('span', null, label), el('span', null, value + ' / ' + max));
+    const track = el('div', 'bar');
+    const fill = el('div');
+    fill.style.width = Math.max(0, Math.min(100, (value / max) * 100)) + '%';
+    fill.style.background = color;
+    track.append(fill);
+    row.append(lab, track);
+    return row;
+  }
+
+  function stat(label, value) {
+    const s = el('div', 'stat');
+    s.append(el('span', null, label), document.createTextNode(value));
+    return s;
+  }
+
+  function renderBot(b, now) {
+    const card = el('div', 'card');
+    const top = el('div', 'top');
+    top.append(el('div', 'name', b.name), el('div', 'pill ' + statusClass(b.status), b.status));
+    card.append(top);
+
+    if (b.status === 'online' && b.health !== undefined) {
+      const hColor = b.health <= 6 ? 'var(--red)' : b.health <= 12 ? 'var(--yellow)' : 'var(--green)';
+      card.append(bar('Health', Math.round(b.health), 20, hColor));
+      card.append(bar('Food', b.food, 20, 'var(--blue)'));
+
+      const stats = el('div', 'stats');
+      const night = b.timeOfDay >= 13000 && b.timeOfDay < 23000;
+      const sky = (night ? '\uD83C\uDF19 Night' : '\u2600\uFE0F Day') + (b.raining ? ' \u00B7 \uD83C\uDF27\uFE0F Rain' : '');
+      stats.append(
+        stat('Hostiles within 32 blocks', b.hostilesNearby === null || b.hostilesNearby === undefined ? '\u2013' : String(b.hostilesNearby)),
+        stat('Game time', b.timeOfDay !== undefined ? fmtGameClock(b.timeOfDay) + '  ' + sky : '\u2013'),
+        stat('Online for', fmtUptime(b.onlineSince, now)),
+        stat('Ping', b.ping !== undefined ? b.ping + ' ms' : '\u2013'),
+        stat('Deaths / reconnects', b.deaths + ' / ' + b.reconnects),
+        stat('Dimension', b.dimension ? String(b.dimension).replace('minecraft:', '') : '\u2013')
+      );
+      if (b.position) stats.append(stat('Position', b.position.x + ', ' + b.position.y + ', ' + b.position.z));
+      card.append(stats);
+
+      const pl = el('div', 'players');
+      if (b.players && b.players.length) {
+        pl.append(document.createTextNode('Players online: '), el('b', null, b.players.join(', ')));
+      } else {
+        pl.textContent = 'No other players online';
+      }
+      card.append(pl);
+    } else {
+      const stats = el('div', 'stats');
+      stats.append(stat('Deaths / reconnects', b.deaths + ' / ' + b.reconnects));
+      card.append(stats);
+    }
+    return card;
+  }
+
+  function renderEvents(list) {
+    const box = document.getElementById('events');
+    box.replaceChildren();
+    if (!list.length) { box.append(el('div', 'empty', 'Nothing yet.')); return; }
+    for (const ev of list) {
+      const row = el('div', 'ev');
+      row.append(el('time', null, new Date(ev.t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })), el('div', null, ev.text));
+      box.append(row);
+    }
+  }
+
+  async function refresh() {
+    const errBox = document.getElementById('error');
+    try {
+      const r = await fetch('/api/status', { cache: 'no-store' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      const grid = document.getElementById('bots');
+      grid.replaceChildren(...data.bots.map((b) => renderBot(b, data.now)));
+      renderEvents(data.events);
+      document.getElementById('updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+      errBox.hidden = true;
+    } catch (e) {
+      errBox.textContent = 'Could not reach the bot service (' + e.message + '). It may be waking up, so retrying\u2026';
+      errBox.hidden = false;
+    }
+  }
+
+  refresh();
+  setInterval(refresh, 5000);
+</script>
+</body>
+</html>
