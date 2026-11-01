@@ -75,6 +75,43 @@ function snapshot(name) {
   return out;
 }
 
+// ---- Diagnostics: work out which server the bots are really on ----
+function pingServer(log) {
+  try {
+    const mc = require('minecraft-protocol');
+    mc.ping({ host: HOST, port: PORT }, (err, r) => {
+      if (err) return log('Server ping failed:', err.message);
+      const motd = typeof r.description === 'string' ? r.description : JSON.stringify(r.description);
+      log('Server ping:', JSON.stringify({
+        motd,
+        version: r.version,
+        players: r.players && { online: r.players.online, max: r.players.max, sample: r.players.sample },
+      }));
+    });
+  } catch (e) {
+    log('Ping unavailable:', e.message);
+  }
+}
+
+function describeServer(b, log) {
+  try {
+    const p = b.entity && b.entity.position;
+    log('Server details:', JSON.stringify({
+      spawnedAt: p && { x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) },
+      worldSpawn: b.spawnPoint && { x: b.spawnPoint.x, y: b.spawnPoint.y, z: b.spawnPoint.z },
+      gameMode: b.game && b.game.gameMode,
+      difficulty: b.game && b.game.difficulty,
+      dimension: b.game && b.game.dimension,
+      maxPlayers: b.game && b.game.maxPlayers,
+      worldDay: b.time && b.time.day,
+      playersInTabList: Object.keys(b.players || {}),
+    }));
+  } catch (e) {
+    log('Could not read server details:', e.message);
+  }
+  pingServer(log);
+}
+
 // ---- Bots ----
 function startBot(username) {
   const state = { status: 'starting', bot: null, since: null, deaths: 0, reconnects: 0 };
@@ -147,6 +184,10 @@ function startBot(username) {
       }
       everConnected = true;
       log('Spawned');
+      if (!b._diagnosed) {
+        b._diagnosed = true;
+        setTimeout(() => describeServer(b, log), 2000);
+      }
 
       // Anti-idle without moving: just turn the head every so often
       if (!moveTimer) {
@@ -177,7 +218,20 @@ USERNAMES.forEach((name, i) => setTimeout(() => startBot(name), i * STAGGER_MS))
 
 // ---- Web dashboard (also the health endpoint for UptimeRobot) ----
 const app = express();
-app.use(express.static(path.join(__dirname, 'public')));
+const fs = require('fs');
+const PAGE_CANDIDATES = [
+  path.join(__dirname, 'public', 'index.html'),
+  path.join(__dirname, 'index.html'),
+];
+app.get('/', (_req, res) => {
+  const page = PAGE_CANDIDATES.find((f) => fs.existsSync(f));
+  if (page) return res.sendFile(page);
+  res.status(500).type('text/plain').send(
+    'Dashboard file not found.\n\nLooked for:\n' + PAGE_CANDIDATES.join('\n') +
+    '\n\nFiles next to index.js: ' + fs.readdirSync(__dirname).join(', ') +
+    '\n\nAdd public/index.html to your repo and redeploy. The bots are still running: see /api/status.'
+  );
+});
 app.get('/health', (_req, res) => res.send('ok'));
 app.get('/api/status', (_req, res) => {
   res.json({
