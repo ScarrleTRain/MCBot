@@ -15,6 +15,16 @@ const SHOW_COORDS = process.env.SHOW_COORDS === 'true';   // the page is public,
 const USERNAMES = (process.env.MC_USERNAMES || process.env.MC_USERNAME || 'CreeperFarm')
   .split(',').map((s) => s.trim()).filter(Boolean);
 
+// Optional skins, one per bot: SKINS=CreeperFarm:Notch,CreeperFarm2:jeb_
+// SKIN_COMMAND is the command sent in chat; {skin} is replaced with the value above.
+// Use exactly what you'd type in-game, e.g. "/skin set mojang {skin}" or "/skin set web classic {skin}"
+const SKIN_COMMAND = process.env.SKIN_COMMAND || '/skin set {skin}';
+const SKINS = {};
+(process.env.SKINS || '').split(',').forEach((pair) => {
+  const i = pair.indexOf(':');
+  if (i > 0) SKINS[pair.slice(0, i).trim()] = pair.slice(i + 1).trim();
+});
+
 if (!HOST) {
   console.error('MC_HOST is required');
   process.exit(1);
@@ -114,7 +124,7 @@ function describeServer(b, log) {
 
 // ---- Bots ----
 function startBot(username) {
-  const state = { status: 'starting', bot: null, since: null, deaths: 0, reconnects: 0 };
+  const state = { status: 'starting', bot: null, since: null, deaths: 0, reconnects: 0, skinApplied: false };
   states[username] = state;
   let moveTimer = null;
   let retryTimer = null;
@@ -184,16 +194,29 @@ function startBot(username) {
       }
       everConnected = true;
       log('Spawned');
+
+      // Set the skin once per bot per deploy (skin mods remember it across rejoins)
+      if (SKINS[username] && !state.skinApplied) {
+        state.skinApplied = true;
+        setTimeout(() => {
+          if (state.bot !== b) return;
+          const cmd = SKIN_COMMAND.replace('{skin}', SKINS[username]);
+          log('Running:', cmd);
+          b.chat(cmd);
+        }, 5000);
+      }
       if (!b._diagnosed) {
         b._diagnosed = true;
         setTimeout(() => describeServer(b, log), 2000);
       }
 
-      // Anti-idle without moving: just turn the head every so often
+      // Anti-idle without moving: turn the head and swing the arm. Turning alone
+      // doesn't reset the server's idle timer, but swinging does.
       if (!moveTimer) {
         moveTimer = setInterval(() => {
           if (!b.entity) return;
           b.look(Math.random() * Math.PI * 2, 0, true);
+          b.swingArm('right');
         }, 20000);
       }
     });
